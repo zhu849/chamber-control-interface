@@ -34,6 +34,7 @@
 
 /*Function*/
 static int cmdConvertToNum(char*);
+static void tempRead();
 static void tempSetup();
 static void fanSetup();
 static void fanOn();
@@ -48,7 +49,6 @@ int main() {
 	//// Connection Myconnect = new Connection();
 	//// SerialPort comport = new SerialPort();
 	//// Modbus.Device.ModbusSerialMaster master = null;
-	
 	////comport.Close();
 
 	//Set information of RS232 connection like port name, parity bits, stop bits, data bits, baudrate and slave ID.
@@ -59,19 +59,25 @@ int main() {
 	
 	switch(cmdConvertToNum(args[0])){
 		case TEMP_READ:
-			tempReadFromSDS();
+			tempRead();
 			break;
 		case TEMP_SETUP:
+			tempSetup();
 			break;
 		case FAN_SETUP:
+			fanSetup();
 			break;
 		case FAN_ON:
+			fanOn();
 			break;
 		case FAN_OFF:
+			fanOff();
 			break;
 		case BULB_ON:
+			bulbOn();
 			break;
 		case BULB_OFF:
+			bulbOff();
 			break;
 		default:
 			printf("Error command or command convert failured.\n");
@@ -97,7 +103,7 @@ int setConnectionInfo() {
 }
 
 //Get temperature from BTC-9100
-void tempReadFromSDS() {
+void tempRead() {
 	
 }
 
