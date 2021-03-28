@@ -45,6 +45,17 @@ static int setConnectionInfo();
 
 int main() {
 	char args[2][MAX_STR_LENS] = { "TempSetup", "48.7" };//For test
+	//// Connection Myconnect = new Connection();
+	//// SerialPort comport = new SerialPort();
+	//// Modbus.Device.ModbusSerialMaster master = null;
+	
+	////comport.Close();
+
+	//Set information of RS232 connection like port name, parity bits, stop bits, data bits, baudrate and slave ID.
+	if (!setConnectionInfo()) {
+		printf("Fail to set connection with chamber.");
+		return 0;
+	};
 	
 	switch(cmdConvertToNum(args[0])){
 		case TEMP_READ:
@@ -82,6 +93,7 @@ int cmdConvertToNum(char *str) {
 //Set Information about serial port connection
 int setConnectionInfo() {
 
+	return 0;//Fail to set connection
 }
 
 //Get temperature from BTC-9100
