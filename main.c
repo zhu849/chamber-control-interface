@@ -8,23 +8,22 @@
 
 /* Temperature controller RS232 connection infomation */
 #define BTC9100_CMB_PORTNAME	"/dev/ttyUSB0"
-#define BTC9100_CMB_PARITY		PARENB /* 0 = None, PARENB = Even, PARODD = Odd */
-#define BTC9100_CMB_STOPBITS	1
+#define BTC9100_CMB_PARITY		PARENB	/* 0 = None, PARENB = Even, PARODD = Odd */
+#define BTC9100_CMB_STOPBITS	1		/* CSTOPB = 2 bits, otherwise = 1bits */
 #define BTC9100_CMB_DATABITS	8
-#define BTC9100_CMB_BAUDRATE	B9600 /* B + baudrate */
+#define BTC9100_CMB_BAUDRATE	B9600	/* B + baudrate */
 #define BTC9100_SLAVE_ID		"2"
 
 /* Fan controller RS232 connection information */
 #define EZD305F_CMB_PORTNAME	"/dev/ttyUSB0"
-#define EZD305F_CMB_PARITY		0 /* 0 = None, PARENB = Even, PARODD = Odd */
-#define EZD305F_CMB_STOPBITS	1
+#define EZD305F_CMB_PARITY		0	   /* 0 = None, PARENB = Even, PARODD = Odd */
+#define EZD305F_CMB_STOPBITS	1	   /* CSTOPB = 2 bits, otherwise = 1bits */
 #define EZD305F_CMB_DATABITS	8
-#define EZD305F_CMB_BAUDRATE	B9600 /* B + baudrate */
+#define EZD305F_CMB_BAUDRATE	B9600  /* B + baudrate */
 #define EZD305F_SLAVE_ID		"0A"
 
 /* Static Number */
 #define MAX_STR_LENS 50
-
 
 /* Command Define */
 #define TEMP_READ	0
@@ -52,7 +51,6 @@ static void bulbOn();
 static void bulbOff();
 static int setConnectionInfo();
 
-
 /* Convert command of string type to corresponding number */  
 int cmdConvertToNum(char *str) {
 	if (strcmp(str, "TempRead")) return TEMP_READ;
@@ -66,12 +64,12 @@ int cmdConvertToNum(char *str) {
 
 /* Set Information about serial port connection */
 int setConnectionInfo() {
-	int status;
+	int status;/* Record ioctl message */
 
-	comport = open(BTC9100_CMB_PORTNAME, O_RDWR | O_NOCTTY | O_NDELAY);
+	comport = open(BTC9100_CMB_PORTNAME, O_RDWR | O_NOCTTY | O_NDELAY); /* Open file can read&write in nonblocking mode */
 	if (comport == -1) {
 		printf("Unable to open comport with %s\n", BTC9100_CMB_PORTNAME);
-		return 0;/* Fail to set connection */
+		return 0;
 	}
 	
 	/* Get parameters associated with the object referred by fd and stores them in the termios structure.*/
@@ -82,11 +80,25 @@ int setConnectionInfo() {
 	}
 	memset(&newPortSetting, 0, sizeof(newPortSetting)); /* Initialize new port setting struct */
 	/* Set new port setting struct */
-	newPortSetting.c_cflag = BTC9100_CMB_DATABITS | BTC9100_CMB_PARITY | BTC9100_CMB_STOPBITS | CLOCAL | CREAD;
-	newPortSetting.c_oflag = 0;
-	newPortSetting.c_lflag = 0;
-	newPortSetting.c_cc[VMIN] = 0;
-	newPortSetting.c_cc[VTIME] = 0;
+	newPortSetting.c_cflag = BTC9100_CMB_DATABITS | BTC9100_CMB_PARITY | BTC9100_CMB_STOPBITS | CLOCAL | CREAD;/* Setting about control modes*/
+	/* Select iflag mode */
+	switch (BTC9100_CMB_PARITY) {
+	case 0:
+		newPortSetting.c_iflag = IGNPAR;/* Ignore check */
+		break;
+	case PARODD:
+	case PARENB:
+		newPortSetting.c_iflag = INPCK;/* Enable odd/even check */
+		break;
+	default:
+		printf("Invaild parity with %s.\n", BTC9100_CMB_PORTNAME);
+		return 0;
+	}
+	
+	newPortSetting.c_oflag = 0;/* Setting about output modes */
+	newPortSetting.c_lflag = 0;/* Setting about local modes */
+	newPortSetting.c_cc[VMIN] = 0;/* Defines minimum number of characters for noncanonical read */
+	newPortSetting.c_cc[VTIME] = 0;/* Defines timeout in deciseconds for noncanonical read */
 
 	/* Set input baud rate in termios structure */
 	if (cfsetispeed(&newPortSetting, BTC9100_CMB_BAUDRATE) == -1) {
