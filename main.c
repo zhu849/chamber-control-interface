@@ -49,7 +49,7 @@ static void fanOff();
 static void bulbSetup();
 static void bulbOn();
 static void bulbOff();
-static int setConnectionInfo();
+static int openConnection();
 
 /* Convert command of string type to corresponding number */  
 int cmdConvertToNum(char *str) {
@@ -62,8 +62,8 @@ int cmdConvertToNum(char *str) {
 	else if (strcmp(str, "BulbOff")) return BULB_OFF;
 }
 
-/* Set Information about serial port connection */
-int setConnectionInfo() {
+/* Set Information about serial port connection then open it */
+int openConnection() {
 	int status;/* Record ioctl message */
 
 	comport = open(BTC9100_CMB_PORTNAME, O_RDWR | O_NOCTTY | O_NDELAY); /* Open file can read&write in nonblocking mode */
@@ -94,9 +94,10 @@ int setConnectionInfo() {
 		printf("Invaild parity with %s.\n", BTC9100_CMB_PORTNAME);
 		return 0;
 	}
-	
 	newPortSetting.c_oflag = 0;/* Setting about output modes */
 	newPortSetting.c_lflag = 0;/* Setting about local modes */
+	/* MIN == 0; TIME == 0: If data is available, read returns immediately, 
+	   with the lesser of the number of bytes available, or the number of bytes requested. If no data is available, read returns 0 */
 	newPortSetting.c_cc[VMIN] = 0;/* Defines minimum number of characters for noncanonical read */
 	newPortSetting.c_cc[VTIME] = 0;/* Defines timeout in deciseconds for noncanonical read */
 
@@ -133,6 +134,20 @@ int setConnectionInfo() {
 		return 0;
 	}
 	return 1;/* Success to set connection */
+}
+
+/* Close opening serial port connection */
+int closeConnection() {
+	int status;/* Record ioctl message */
+
+	if (ioctl(comport, TIOCMGET, &status) == -1)
+		printf("Unable to get port status when closing connection.\n");
+	status &= ~(TIOCM_DTR| TIOCM_RTS);/* Turn off DTR and RTS */
+	if (ioctl(comport, TIOCMSET, &status) == -1)
+		printf("Unable to set port status when closing connection.\n");
+	tcsetattr(comport, TCSANOW, &oldPortSetting);
+	close(comport);
+	return 1;
 }
 
 //Get temperature from BTC-9100
@@ -183,7 +198,7 @@ int main() {
 	////comport.Close();
 
 	/* Set information of RS232 connection like port name, parity bits, stop bits, data bits, baudrate and slave ID. */
-	if (!setConnectionInfo()) {
+	if (!openConnection()) {
 		printf("Fail to set connection with chamber.");
 		return 0;
 	};
