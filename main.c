@@ -51,15 +51,15 @@ static void bulbOn();
 static void bulbOff();
 static int openConnection();
 
-/* Convert command of string type to corresponding number */  
-int cmdConvertToNum(char *str) {
-	if (strcmp(str, "TempRead")) return TEMP_READ;
-	else if(strcmp(str, "TempSetup")) return TEMP_SETUP;
-	else if (strcmp(str, "FanSetup")) return FAN_SETUP;
-	else if(strcmp(str, "FanOn")) return FAN_ON;
-	else if (strcmp(str, "FanOff")) return FAN_OFF;
-	else if (strcmp(str, "BulbOn")) return BULB_ON;
-	else if (strcmp(str, "BulbOff")) return BULB_OFF;
+/* Convert command of string type to corresponding number */
+int cmdConvertToNum(char* str) {
+	if (!strcmp(str, "TempRead")) return TEMP_READ;
+	else if (!strcmp(str, "TempSetup")) return TEMP_SETUP;
+	else if (!strcmp(str, "FanSetup")) return FAN_SETUP;
+	else if (!strcmp(str, "FanOn")) return FAN_ON;
+	else if (!strcmp(str, "FanOff")) return FAN_OFF;
+	else if (!strcmp(str, "BulbOn")) return BULB_ON;
+	else if (!strcmp(str, "BulbOff")) return BULB_OFF;
 }
 
 /* Set Information about serial port connection then open it */
@@ -71,7 +71,7 @@ int openConnection() {
 		printf("Unable to open comport with %s\n", BTC9100_CMB_PORTNAME);
 		return 0;
 	}
-	
+
 	/* Get parameters associated with the object referred by fd and stores them in the termios structure.*/
 	if (tcgetattr(comport, &oldPortSetting) == -1) {
 		close(comport);
@@ -96,7 +96,7 @@ int openConnection() {
 	}
 	newPortSetting.c_oflag = 0;/* Setting about output modes */
 	newPortSetting.c_lflag = 0;/* Setting about local modes */
-	/* MIN == 0; TIME == 0: If data is available, read returns immediately, 
+	/* MIN == 0; TIME == 0: If data is available, read returns immediately,
 	   with the lesser of the number of bytes available, or the number of bytes requested. If no data is available, read returns 0 */
 	newPortSetting.c_cc[VMIN] = 0;/* Defines minimum number of characters for noncanonical read */
 	newPortSetting.c_cc[VTIME] = 0;/* Defines timeout in deciseconds for noncanonical read */
@@ -142,7 +142,7 @@ int closeConnection() {
 
 	if (ioctl(comport, TIOCMGET, &status) == -1)
 		printf("Unable to get port status when closing connection.\n");
-	status &= ~(TIOCM_DTR| TIOCM_RTS);/* Turn off DTR and RTS */
+	status &= ~(TIOCM_DTR | TIOCM_RTS);/* Turn off DTR and RTS */
 	if (ioctl(comport, TIOCMSET, &status) == -1)
 		printf("Unable to set port status when closing connection.\n");
 	tcsetattr(comport, TCSANOW, &oldPortSetting);
@@ -152,7 +152,7 @@ int closeConnection() {
 
 //Get temperature from BTC-9100
 void tempRead() {
-	
+
 }
 
 //Set temperature value, celsius, to BTC-9100
@@ -165,33 +165,35 @@ void fanSetup() {
 
 }
 
-//Turn on fan
+/* Turn on fan */
 void fanOn() {
-
+	unsigned char comm[] = { 0xE0, 0x0A, 0x00, 0x57, 0x01, 0x00, 0x00, 0x00, 0x01, 0xFE };
+	write(comport, comm, sizeof(char));
 }
 
-//Turn off fan
-void fanOff(){
-
+/* Turn off fan */
+void fanOff() {
+	unsigned char comm[] = { 0xE0, 0x0A, 0x00, 0x57, 0x01, 0x00, 0x00, 0x00, 0x01, 0xFE };
+	write(comport, comm, sizeof(char));
 }
 
-//Set bulb value, brightness, to BTC-9100
+/* Set bulb value, brightness, to BTC-9100 */
 void bulbSetup() {
 
 }
 
-//Turn on bulb
+/* Turn on bulb */
 void bulbOn() {
 
 }
 
-//Turn off bulb
+/* Turn off bulb */
 void bulbOff() {
 
 }
 
 int main() {
-	char args[2][MAX_STR_LENS] = { "TempSetup", "48.7" };//For test
+	char args[2][MAX_STR_LENS] = { "FanOn", "48.7" };//For test
 	//// Connection Myconnect = new Connection();
 	//// SerialPort comport = new SerialPort();
 	//// Modbus.Device.ModbusSerialMaster master = null;
