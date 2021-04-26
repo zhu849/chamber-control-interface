@@ -10,6 +10,12 @@
 #include <unistd.h>
 #include <time.h>
 #include <errno.h>
+#include <pthread.h>
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <math.h>
 
 /* Temperature controller connection infomation */
 #define BTC9100_CMB_PORTNAME    "/dev/ttyUSB0"
@@ -39,13 +45,23 @@
 #define BULB_ON     6
 #define BULB_OFF    7
 
+/* Web socket reference */
+#define LISTEN_PORT     1500
+#define MAX_LISTEN      5
+#define MAX_DATA_LENS   100
+
+/* Static number */
+#define TEMP_RANGE 0.5
+
+
 /* Global variable */
 int comport;  
-struct termios portSetting;
-modbus_t *modbusport = NULL;
+int err;
+int sockfd;
 float envTemp;
 float targetTemp;
-int err;
+struct termios portSetting;
+modbus_t *modbusport = NULL;
 
 /* Function */
 static int cmdConvertToNum(char*);
@@ -57,14 +73,17 @@ static void fanOff();
 static void bulbSetup();
 static void bulbOn();
 static void bulbOff();
+static void tempControl();
+static void dealCommand(char*, char*);
 static int  openSerial();
 static int  closeSerial();
 static int  openModbus();
 static int  closeModbus();
+static void openSocket();
 
 /* Convert command of string type to corresponding number */
 int cmdConvertToNum(char* str) {
-	printf("Now Command:%s\n", str);
+    printf("Now Command:%s\n", str);
     if (!strcmp(str, "TempRead"))
         return TEMP_READ;
     else if (!strcmp(str, "TempSetup"))
@@ -225,8 +244,8 @@ void tempRead() {
         fprintf(stderr, "%s\n", modbus_strerror(errno));
         return;
     }
-    envTemp = (float)(*tab_reg-19999)/10;
-    printf("reg[%d] = %f(%d)\n", BTC9100_SP1_REG_ADDR, envTemp, *tab_reg);
+    targetTemp = (float)(*tab_reg-19999)/10;
+    printf("reg[%d] = %f(%d)\n", BTC9100_SP1_REG_ADDR, targetTemp, *tab_reg);
 
     /* Read target environment temperature */
     err = modbus_read_registers(modbusport, BTC9100_PV_REG_ADDR, 1, tab_reg);
@@ -234,8 +253,8 @@ void tempRead() {
         fprintf(stderr, "%s\n", modbus_strerror(errno));
         return;
     }
-    targetTemp = (float)(*tab_reg-19999)/10;
-    printf("reg[%d] = %f(%d)\n", BTC9100_PV_REG_ADDR, targetTemp, *tab_reg);
+    envTemp = (float)(*tab_reg-19999)/10;
+    printf("reg[%d] = %f(%d)\n", BTC9100_PV_REG_ADDR, envTemp, *tab_reg);
     usleep(500000); /* Sleep for 0.5s */
     return;
 }
@@ -254,6 +273,107 @@ void tempSetup(float inputTemp) {
     return;
 }
 
+void openSocket(){
+    struct sockaddr_in localAddr;
+    sockfd = socket(AF_INET, SOCK_STREAM, 0); /* IPv4 TCP connection */
+    if(sockfd == -1){
+        fprintf(stderr, "Socket build failed:%d\n", errno);
+        return;
+    }
+
+    localAddr.sin_family = AF_INET;
+    localAddr.sin_port = htons(LISTEN_PORT);
+    localAddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    bzero(&(localAddr.sin_zero), 8);
+    if(bind(sockfd, (struct sockaddr *)&localAddr, sizeof(struct sockaddr)) < 0){
+        fprintf(stderr, "Socket bind error\n");
+        return;
+    }
+    return;
+}
+
+void listenFromSocket(){
+    int newfd;
+    int sin_size;
+    struct sockaddr_in serverAddr;
+    char buf[MAX_DATA_LENS];
+    char returnBuf[MAX_DATA_LENS];
+
+    listen(sockfd, MAX_LISTEN);
+
+    while(1){
+        sinSize = sizeof(struct sockaddr_in);
+        newfd = accept(sockfd, (struct sockaddr *)&serverAddr, &sinSize);
+        if(newfd == -1){
+            printf("Receive failed\n");
+            return;
+        }
+        else{
+            printf("Receive success\n");
+            memset(buf, 0, MAX_DATA);
+            memset(returnBuf, 0, MAX_DATA);
+            recv(newfd, buf, MAX_DATA, 0);/* Waitting for input command by newfd */
+            dealCommand(buf, returnBuf);
+            send(newfd, returnBuf, strlen(returnBuf), 0);
+        }
+    }
+    return;
+}
+
+/* Deal with chamber temperature control with thread 1 */ 
+void tempControl(){
+    int timeCounter = 0;
+
+    while(1){
+        timeCounter++;
+        /* Read temperature from chamber every 5 time unit(0.01s) */
+        if(timeCounter%5==0){
+            timeCounter = 0;
+            // call temp read
+
+            /* Chamber too hot, adjust fan fast or light the bulb */
+            if(envTemp - targetTemp > TEMP_RANGE){
+                // adjust fan fast
+            }
+            /* Chamber too cold, adjust fan slow or dim the bulb */
+            else if(targetTemp - envTemp > TEMP_RANGE){
+                // adjust fan slow
+            }
+        }
+        usleep(10000);/* suspend excution for 0.01 seconds */
+    }
+    return;
+}
+
+/* Do correspondence action with command from web server */
+void dealCommand(char* buf, char* returnBuf){
+    if(strstr(buf, "TempRead")!=NULL){
+        snprintf(returnBuf, sizeof(returnBuf), "envTemp:%f, targetTemp:%f\n",envTemp,targetTemp);
+        return;
+    }
+    else if(strstr(buf, "TempSetup")!= NULL){
+
+    }
+    else if(strstr(buf, "FanSetup")!=NULL){
+
+    }
+    else if(strstr(buf, "FanOn") != NULL) {
+        
+    }
+    else if(strstr(buf, "FanOff") != NULL) {
+        
+    }
+    else if(strstr(buf, "BulbOn") != NULL) {
+        
+    }
+    else if(strstr(buf, "BulbOff") != NULL) {
+       
+    }
+    else{
+        printf("***Error command or command convert failured.***\n");
+    }
+}
+
 /* Set bulb value, brightness, to BTC-9100 */
 void bulbSetup() {}
 
@@ -265,7 +385,10 @@ void bulbOff() {}
 
 int main(int argc, char* argv[]) {
     //char args[2][50] = {"FanOn", "48.7"};  // For test
-    
+    pthread_t th1;
+    pthread_create(&th1, NULL, tempControl, "Child");
+    openSocket();
+
     switch (cmdConvertToNum(argv[1])) {
         case TEMP_READ:
             if (!openModbus()) {
@@ -322,5 +445,7 @@ int main(int argc, char* argv[]) {
         default:
             printf("Error command or command convert failured.\n");
     };
+
+    pthread_join(th1, NULL);
     return 0;
 }
