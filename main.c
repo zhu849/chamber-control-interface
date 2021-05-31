@@ -1,61 +1,6 @@
-#include <errno.h>
-#include <fcntl.h>
-#include <math.h>
-#include <modbus.h>
-#include <modbus/modbus.h>
-#include <netinet/in.h>
-#include <pthread.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/ioctl.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <termios.h>
-#include <time.h>
-#include <unistd.h>
+/* Implement core function of MCU interface */
 
-/* Temperature controller connection infomation */
-#define BTC9100_CMB_PORTNAME "/dev/ttyUSB0"
-#define BTC9100_MODBUS_PARITY 'E' /* 'N' for none, 'E' for even, 'O' for odd */
-#define BTC9100_CMB_STOPBITS 1
-#define BTC9100_CMB_DATABITS 8 /* allow value are 5,6,7 and 8 */
-#define BTC9100_MODBUS_BAUDRATE 9600
-#define BTC9100_MODBUS_SLAVE_ID 2
-#define BTC9100_SP1_REG_ADDR 0
-#define BTC9100_PV_REG_ADDR 64
-
-/* Controller connection information */
-#define EZD305F_CMB_PORTNAME "/dev/ttyUSB0"
-#define EZD305F_CMB_PARITY 0   /* 0 = None, PARENB = Even, PARODD = Odd */
-#define EZD305F_CMB_STOPBITS 1 /* CSTOPB = 2 bits, otherwise = 1bits */
-#define EZD305F_CMB_DATABITS CS8
-#define EZD305F_CMB_BAUDRATE B9600 /* B + baudrate */
-
-/* SlaveID with different EZD305F device */
-#define FAN_EZD305F_SLAVE_ID  0x0A
-#define BULB_EZD305F_SLAVE_ID 0x00
-
-/* Command Define */
-#define TEMP_READ 0
-#define TEMP_SETUP 1
-#define FAN_SETUP 2
-#define FAN_ON 3
-#define FAN_OFF 4
-#define BULB_SETUP 5
-#define BULB_ON 6
-#define BULB_OFF 7
-
-/* Web socket reference */
-#define LISTEN_PORT 1500
-#define MAX_LISTEN 5
-#define MAX_DATA_LENS 100
-
-/* Static number */
-#define TEMP_RANGE 0.5
-
+#include "main.h"
 
 /* Global variable */
 int comport;
@@ -68,23 +13,6 @@ int bulbLight;
 float envTemp;
 float targetTemp;
 
-
-/* Function */
-static int cmdConvertToNum(char *);
-static unsigned char* percentToHex(int);
-static void tempRead();
-static void tempSetup(float);
-static void devSetup(unsigned char, int);
-static void devOnOff(unsigned char, unsigned char);
-static void *tempControl(void *tmp);
-static void dealCommand(char *, char *);
-static int openSerial();
-static int closeSerial();
-static int openModbus();
-static int closeModbus();
-static void openSocket();
-static unsigned char* percentToHex(int);
-
 /* Convert command of string type to corresponding number */
 int cmdConvertToNum(char *str)
 {
@@ -95,6 +23,8 @@ int cmdConvertToNum(char *str)
         return TEMP_SETUP;
     else if (!strcmp(str, "FanSetup"))
         return FAN_SETUP;
+    else if (!strcmp(str, "BulbSetup"))
+        return BULB_SETUP;
     else if (!strcmp(str, "FanOn"))
         return FAN_ON;
     else if (!strcmp(str, "FanOff"))
@@ -252,7 +182,7 @@ void devSetup(unsigned char slaveID, int value)
 {
     unsigned char *valueHex; 
     valueHex = percentToHex(value);
-    if(!valueHex){
+    if(valueHex[0]<0x10 && valueHex[1]<0x10){
         unsigned char comm[] = {0xE0, slaveID, 0x00, 0x57, 0x03,
                                 0x00, 0x00, valueHex[0], valueHex[1], 0xFE};
         write(comport, comm, sizeof(comm));
@@ -293,7 +223,9 @@ void tempRead()
     }
     envTemp = (float) (*tab_reg - 19999) / 10;
     printf("reg[%d] = %f(%d)\n", BTC9100_PV_REG_ADDR, envTemp, *tab_reg);
-    usleep(500000); /* Sleep for 0.5s */
+    usleep(50000); /* Sleep for 0.05s */
+    /* For test*/
+    printf("*** fanSpeed:%d, bulbLight:%d, envTemp:%.2f, targetTemp:%.2f ***\n",fanSpeed, bulbLight, envTemp, targetTemp);
     return;
 }
 
@@ -350,12 +282,11 @@ void listenFromSocket()
             printf("Receive failed\n");
             return;
         } else {
-            printf("Receive success\n");
             memset(buf, 0, MAX_DATA_LENS);
             memset(returnBuf, 0, MAX_DATA_LENS);
             recv(newfd, buf, MAX_DATA_LENS,
                  0); /* Waitting for input command by newfd */
-            //printf("Receive from web server:%s\n",&buf);//for test
+            printf("Receive msg from web server, command: %s\n",&buf);
             dealCommand(buf, returnBuf);
             send(newfd, returnBuf, strlen(returnBuf), 0);
             printf("%s %d\n", returnBuf, strlen(returnBuf));
@@ -368,6 +299,7 @@ void listenFromSocket()
 void *tempControl(void *tmp)
 {
     int timeCounter = 0;
+    char c;
 
     while (1) {
         timeCounter++;
@@ -419,12 +351,12 @@ void *tempControl(void *tmp)
 void dealCommand(char *buf, char *returnBuf)
 {
     char *p;
-    if (strstr(buf, "TempRead") != NULL) {
-        /* Command format: "TempRead"*/
-        snprintf(returnBuf, MAX_DATA_LENS, "envTemp:%f, targetTemp:%f\n",
-                 envTemp, targetTemp);
-        return;
-    } else if (strstr(buf, "TempSetup") != NULL) {
+    if(strstr(buf, "DataRead") != NULL){
+    	/* Command format: "DataRead"*/
+    	snprintf(returnBuf, MAX_DATA_LENS, "envTemp:%f, fanSpeed:%d, bulbLight:%d, targetTemp:%f\n", envTemp, fanSpeed, bulbLight, targetTemp);
+    	return;
+    }
+	else if (strstr(buf, "TempSetup") != NULL) {
         /* Command format: "TempSetup 40.5"*/
         p = strtok(buf, " ");
         p = strtok(NULL, "");
@@ -454,6 +386,22 @@ void dealCommand(char *buf, char *returnBuf)
         closeSerial();
         snprintf(returnBuf, MAX_DATA_LENS, "OK, Now fan speed is %d\n",
                  fanSpeed);
+        return;
+    } else if (strstr(buf, "BulbSetup") != NULL){
+        /* Command format: "BulbSetup 50"*/
+        p = strtok(buf, " ");
+        p = strtok(NULL, "");
+        bulbLight = atof(p);
+        if (!openSerial()) {
+            printf(
+                "Fail to set connection between chamber and PC with serial "
+                "port.");
+            return;
+        };
+        devSetup(BULB_EZD305F_SLAVE_ID,bulbLight);
+        closeSerial();
+        snprintf(returnBuf, MAX_DATA_LENS, "OK, Now bulb light is %d\n",
+                 bulbLight);
         return;
     } else if (strstr(buf, "FanOn") != NULL) {
         /* Command format: "FanOn" */
@@ -506,17 +454,20 @@ void dealCommand(char *buf, char *returnBuf)
     }
 }
 
+
 int main(int argc, char *argv[])
 {
     // char args[2][50] = {"FanOn", "48.7"};  // For test
-    if (argc < 2){
-        pthread_t th1;
-        pthread_create(&th1, NULL, tempControl, "Child");
-        usleep(10000); /* suspend excution for 0.01 seconds */
-        openSocket();
-        listenFromSocket();
-        pthread_join(th1, NULL);
-    } else {
+ 
+    pthread_t th1, th2;
+    pthread_create(&th1, NULL, tempControl, "Child");
+    usleep(10000); /* suspend excution for 0.01 seconds */
+    openSocket();
+    listenFromSocket();
+    pthread_join(th1, NULL);
+
+    /*
+    {
         // interface for test
         switch (cmdConvertToNum(argv[1])) {
         case TEMP_READ:
@@ -534,6 +485,11 @@ int main(int argc, char *argv[])
             devSetup(FAN_EZD305F_SLAVE_ID,atoi(argv[2]));
             closeSerial();
             break;
+        case BULB_SETUP:
+            if (!openSerial()) return 0;
+            devSetup(BULB_EZD305F_SLAVE_ID,atoi(argv[2]));
+            closeSerial();
+            break;          
         case FAN_ON:
             if (!openSerial()) return 0;
             devOnOff(FAN_EZD305F_SLAVE_ID, 1);
@@ -558,6 +514,6 @@ int main(int argc, char *argv[])
             printf("Error command or command convert failured.\n");
         };
     }
-
+    */
     return 0;
 }
