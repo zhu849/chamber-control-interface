@@ -12,6 +12,7 @@ int fanSpeed;
 int bulbLight;
 float envTemp;
 float targetTemp;
+pthread_t th1, th2;
 
 /* Convert command of string type to corresponding number */
 int cmdConvertToNum(char *str)
@@ -159,8 +160,15 @@ int openModbus()
     // RS485 or RS232 */
     modbus_set_debug(
         modbusport,
-        1); /* Verbose messages are displayed on stdout and stderr */
+        0); /* Verbose messages are displayed on stdout and stderr */
+
+    usleep(10000); /* suspend excution for 0.01 seconds */
+
     modbus_set_slave(modbusport, BTC9100_MODBUS_SLAVE_ID);
+    //
+    // set timeout
+    modbus_set_response_timeout(modbusport, 1, 500000);
+
     if (modbus_connect(modbusport) == -1) {
         fprintf(stderr, "Modbus connection failed:%s\n",
                 modbus_strerror(errno));
@@ -271,13 +279,13 @@ void listenFromSocket()
     int sin_size;
     struct sockaddr_in serverAddr;
     char buf[MAX_DATA_LENS];
-    char returnBuf[MAX_DATA_LENS];
+    char returnBuf[MAX_DATA_LENS*5];
 
     listen(sockfd, MAX_LISTEN);
+    sin_size = sizeof(struct sockaddr_in);
+    newfd = accept(sockfd, (struct sockaddr *) &serverAddr, &sin_size);
 
     while (1) {
-        sin_size = sizeof(struct sockaddr_in);
-        newfd = accept(sockfd, (struct sockaddr *) &serverAddr, &sin_size);
         if (newfd == -1) {
             printf("Receive failed\n");
             return;
@@ -449,17 +457,30 @@ void dealCommand(char *buf, char *returnBuf)
         devOnOff(BULB_EZD305F_SLAVE_ID, 0);
         closeSerial();
         snprintf(returnBuf, MAX_DATA_LENS, "OK, Bulb Off\n");                 
+    } else if(strstr(buf, "ConfigFileRead") != NULL) {
+        /* Command format: "ConfigFileRead" */
+        snprintf(returnBuf, MAX_DATA_LENS*5, "BTC9100_CMB_PORTNAME:%s, BTC9100_MODBUS_PARITY:%s, BTC9100_CMB_STOPBITS:%s, BTC9100_CMB_DATABITS:%s, BTC9100_MODBUS_BAUDRATE:%s, BTC9100_MODBUS_SLAVE_ID:%s, BTC9100_SP1_REG_ADDR:%s, BTC9100_PV_REG_ADDR:%s, EZD305F_CMB_PORTNAME:%s, EZD305F_CMB_PARITY:%s, EZD305F_CMB_STOPBITS:%s, EZD305F_CMB_DATABITS:%s, EZD305F_CMB_BAUDRATE:%s, FAN_EZD305F_SLAVE_ID:%s, BULB_EZD305F_SLAVE_ID:%s\n", BTC9100_CMB_PORTNAME, BTC9100_MODBUS_PARITY, BTC9100_CMB_STOPBITS,BTC9100_CMB_DATABITS, BTC9100_MODBUS_BAUDRATE, BTC9100_MODBUS_SLAVE_ID,BTC9100_SP1_REG_ADDR,EZD305F_CMB_PORTNAME,EZD305F_CMB_PARITY,EZD305F_CMB_STOPBITS,EZD305F_CMB_DATABITS,EZD305F_CMB_BAUDRATE, FAN_EZD305F_SLAVE_ID, BULB_EZD305F_SLAVE_ID);
+        return;
+
     } else {
         printf("***Error command or command convert failured.***\n");
     }
 }
 
+void sighandler(int signum){
+    printf("Good bye~~\n");
+    closeModbus();
+    closeSerial();
+    pthread_exit(&th1);
+    exit(0);
+}
 
 int main(int argc, char *argv[])
 {
     // char args[2][50] = {"FanOn", "48.7"};  // For test
+
+    signal(SIGINT, sighandler);
  
-    pthread_t th1, th2;
     pthread_create(&th1, NULL, tempControl, "Child");
     usleep(10000); /* suspend excution for 0.01 seconds */
     openSocket();

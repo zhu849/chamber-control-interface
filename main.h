@@ -16,6 +16,7 @@
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
+#include <signal.h>
 
 /* Temperature controller connection infomation */
 #define BTC9100_CMB_PORTNAME 	"/dev/ttyUSB0"
