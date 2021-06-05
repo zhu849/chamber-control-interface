@@ -8,8 +8,10 @@ int err;
 int sockfd;
 struct termios portSetting;
 modbus_t *modbusport = NULL;
-int fanSpeed;
-int bulbLight;
+float fanSpeed;
+float bulbLight;
+int fanStatus;
+int bulbStatus;
 float envTemp;
 float targetTemp;
 pthread_t th1, th2;
@@ -45,7 +47,7 @@ unsigned char* percentToHex(int value){
         //exit(1)
     }
     else{
-        printf("value: %d\n", value);
+        //printf("value: %d\n", value);
         output[0] = (value * 255 / 100) >> 4;
         output[1] = (value * 255 / 100) & 0x0f;
         return output;
@@ -158,6 +160,7 @@ int openModbus()
     }
     // modbus_rtu_set_serial_mode(MODBUS_RTU_RS485); /* Set serial mode with
     // RS485 or RS232 */
+    
     modbus_set_debug(
         modbusport,
         0); /* Verbose messages are displayed on stdout and stderr */
@@ -213,15 +216,15 @@ void tempRead()
     uint16_t *tab_reg; /* Define register array */
     tab_reg = malloc(sizeof(uint16_t));
 
-    printf("\n----------------\n");
     /* Read target environment temperature */
     err = modbus_read_registers(modbusport, BTC9100_SP1_REG_ADDR, 1, tab_reg);
     if (err == -1) {
         fprintf(stderr, "%s\n", modbus_strerror(errno));
         return;
     }
-    targetTemp = (float) (*tab_reg - 19999) / 10;
-    printf("reg[%d] = %f(%d)\n", BTC9100_SP1_REG_ADDR, targetTemp, *tab_reg);
+    targetTemp = 28.1;
+    //targetTemp = (float) (*tab_reg - 19999) / 10;
+    //printf("reg[%d] = %f(%d)\n", BTC9100_SP1_REG_ADDR, targetTemp, *tab_reg);
 
     /* Read current environment temperature */
     err = modbus_read_registers(modbusport, BTC9100_PV_REG_ADDR, 1, tab_reg);
@@ -230,10 +233,8 @@ void tempRead()
         return;
     }
     envTemp = (float) (*tab_reg - 19999) / 10;
-    printf("reg[%d] = %f(%d)\n", BTC9100_PV_REG_ADDR, envTemp, *tab_reg);
+    //printf("reg[%d] = %f(%d)\n", BTC9100_PV_REG_ADDR, envTemp, *tab_reg);
     usleep(50000); /* Sleep for 0.05s */
-    /* For test*/
-    printf("*** fanSpeed:%d, bulbLight:%d, envTemp:%.2f, targetTemp:%.2f ***\n",fanSpeed, bulbLight, envTemp, targetTemp);
     return;
 }
 
@@ -279,7 +280,7 @@ void listenFromSocket()
     int sin_size;
     struct sockaddr_in serverAddr;
     char buf[MAX_DATA_LENS];
-    char returnBuf[MAX_DATA_LENS*5];
+    char returnBuf[MAX_DATA_LENS];
 
     listen(sockfd, MAX_LISTEN);
     sin_size = sizeof(struct sockaddr_in);
@@ -306,51 +307,89 @@ void listenFromSocket()
 /* Deal with chamber temperature control with thread 1 */
 void *tempControl(void *tmp)
 {
-    int timeCounter = 0;
     char c;
+    /* Switch status: On = 1, Off = 0, None = -1 */
+    int fanSwitch = 0;
+    int bulbSwitch = 0;
 
     while (1) {
-        timeCounter++;
-        /* Read temperature from chamber every 5 time unit(0.01s) */
-        if (timeCounter % 5 == 0) {
-            timeCounter = 0;
-            /* Call temp read function */
-            if (!openModbus()) {
+        if (!openModbus()) {
+            printf(
+                "Fail to set connection between chamber and PC with "
+                "modbus.");
+            return 0;
+        };
+        usleep(100000);
+        tempRead();
+        usleep(100000);
+        closeModbus();
+
+        /* Chamber is ideal status */
+        if(abs(envTemp - targetTemp) <= NORMAL_RANGE){
+            printf("Chamber is in target environment!\n");
+        }
+        else{
+            /* Chamber is very hot */
+            if (envTemp - targetTemp > VERY_HOT_THR) {
+                fanSpeed += 1;
+                bulbLight = 50.0;
+                fanSwitch = 1;
+                bulbSwitch = 0;
+            }
+            /* Chamber is a little hot */
+            if(envTemp - targetTemp > HOT_THR){
+                fanSpeed += 0.2;
+                bulbLight = 30;
+                fanSwitch = 1;
+                bulbSwitch = 1;
+            }
+            /* Chamber is a little cold*/
+            if(envTemp - targetTemp < COLD_THR){
+                fanSpeed = 50;
+                bulbLight += 0.2;
+                fanSwitch = 1;
+                bulbSwitch = 1;
+            }
+            /* Chamber is very cold*/
+            if(envTemp - targetTemp < VERY_COLD_THR){
+                fanSpeed = 70;
+                bulbLight += 1;
+                fanSwitch = 0;
+                bulbSwitch = 1;
+            }
+
+            if(bulbLight>100)
+                bulbLight = 100;
+            else if(bulbLight < 0)
+                bulbLight = 0;
+
+            if(fanSpeed > 100)
+                fanSpeed = 100;
+            else if(fanSpeed < 50)
+                fanSpeed = 50;
+
+            if (!openSerial()) {
                 printf(
                     "Fail to set connection between chamber and PC with "
-                    "modbus.");
+                    "serial port.");
                 return 0;
             };
-            tempRead();
-            closeModbus();
-            /* Chamber too hot, adjust fan fast or light the bulb */
-            if (envTemp - targetTemp > TEMP_RANGE && fanSpeed < 100) {
-                /* Adjust fan fast */
-                fanSpeed += 1;
-                if (!openSerial()) {
-                    printf(
-                        "Fail to set connection between chamber and PC with "
-                        "serial port.");
-                    return 0;
-                };
-                devSetup(FAN_EZD305F_SLAVE_ID,fanSpeed);
-                closeSerial();
-            }
-            /* Chamber too cold, adjust fan slow or dim the bulb */
-            else if (targetTemp - envTemp > TEMP_RANGE && fanSpeed > 0) {
-                /* Adjust fan slow */
-                fanSpeed -= 1;
-                if (!openSerial()) {
-                    printf(
-                        "Fail to set connection between chamber and PC with "
-                        "serial port.");
-                    return 0;
-                };
-                devSetup(FAN_EZD305F_SLAVE_ID,fanSpeed);
-                closeSerial();
-            }
+            usleep(100000);
+            devOnOff(FAN_EZD305F_SLAVE_ID, fanSwitch);
+            usleep(100000);
+            if(fanSwitch)
+                devSetup(FAN_EZD305F_SLAVE_ID, fanSpeed);
+            usleep(100000);
+            devOnOff(BULB_EZD305F_SLAVE_ID, bulbSwitch);
+            usleep(100000);
+            if(bulbSwitch)
+                devSetup(BULB_EZD305F_SLAVE_ID, bulbLight);
+            usleep(100000);
+            closeSerial();
+            usleep(100000);
         }
-        usleep(10000); /* suspend excution for 0.01 seconds */
+        printf("Now Status\nFan Speed:%.2f, Bulb Light:%.2f, Env Temp:%.2f, Target Temp:%2.f\n\n",fanSpeed, bulbLight, envTemp, targetTemp);
+        usleep(200000); /* suspend excution for 0.3 seconds */
     }
     return 0;
 }
@@ -360,11 +399,11 @@ void dealCommand(char *buf, char *returnBuf)
 {
     char *p;
     if(strstr(buf, "DataRead") != NULL){
-    	/* Command format: "DataRead"*/
-    	snprintf(returnBuf, MAX_DATA_LENS, "envTemp:%f, fanSpeed:%d, bulbLight:%d, targetTemp:%f\n", envTemp, fanSpeed, bulbLight, targetTemp);
-    	return;
+        /* Command format: "DataRead"*/
+        snprintf(returnBuf, MAX_DATA_LENS, "envTemp:%f, fanSpeed:%d, bulbLight:%d, targetTemp:%f\n", envTemp, fanSpeed, bulbLight, targetTemp);
+        return;
     }
-	else if (strstr(buf, "TempSetup") != NULL) {
+    else if (strstr(buf, "TempSetup") != NULL) {
         /* Command format: "TempSetup 40.5"*/
         p = strtok(buf, " ");
         p = strtok(NULL, "");
@@ -459,7 +498,7 @@ void dealCommand(char *buf, char *returnBuf)
         snprintf(returnBuf, MAX_DATA_LENS, "OK, Bulb Off\n");                 
     } else if(strstr(buf, "ConfigFileRead") != NULL) {
         /* Command format: "ConfigFileRead" */
-        snprintf(returnBuf, MAX_DATA_LENS*5, "BTC9100_CMB_PORTNAME:%s, BTC9100_MODBUS_PARITY:%s, BTC9100_CMB_STOPBITS:%s, BTC9100_CMB_DATABITS:%s, BTC9100_MODBUS_BAUDRATE:%s, BTC9100_MODBUS_SLAVE_ID:%s, BTC9100_SP1_REG_ADDR:%s, BTC9100_PV_REG_ADDR:%s, EZD305F_CMB_PORTNAME:%s, EZD305F_CMB_PARITY:%s, EZD305F_CMB_STOPBITS:%s, EZD305F_CMB_DATABITS:%s, EZD305F_CMB_BAUDRATE:%s, FAN_EZD305F_SLAVE_ID:%s, BULB_EZD305F_SLAVE_ID:%s\n", BTC9100_CMB_PORTNAME, BTC9100_MODBUS_PARITY, BTC9100_CMB_STOPBITS,BTC9100_CMB_DATABITS, BTC9100_MODBUS_BAUDRATE, BTC9100_MODBUS_SLAVE_ID,BTC9100_SP1_REG_ADDR,EZD305F_CMB_PORTNAME,EZD305F_CMB_PARITY,EZD305F_CMB_STOPBITS,EZD305F_CMB_DATABITS,EZD305F_CMB_BAUDRATE, FAN_EZD305F_SLAVE_ID, BULB_EZD305F_SLAVE_ID);
+        snprintf(returnBuf, MAX_DATA_LENS, "BTC9100_CMB_PORTNAME:%s, BTC9100_MODBUS_PARITY:%s, BTC9100_CMB_STOPBITS:%s, BTC9100_CMB_DATABITS:%s, BTC9100_MODBUS_BAUDRATE:%s, BTC9100_MODBUS_SLAVE_ID:%s, BTC9100_SP1_REG_ADDR:%s, BTC9100_PV_REG_ADDR:%s, EZD305F_CMB_PORTNAME:%s, EZD305F_CMB_PARITY:%s, EZD305F_CMB_STOPBITS:%s, EZD305F_CMB_DATABITS:%s, EZD305F_CMB_BAUDRATE:%s, FAN_EZD305F_SLAVE_ID:%s, BULB_EZD305F_SLAVE_ID:%s\n", BTC9100_CMB_PORTNAME, BTC9100_MODBUS_PARITY, BTC9100_CMB_STOPBITS,BTC9100_CMB_DATABITS, BTC9100_MODBUS_BAUDRATE, BTC9100_MODBUS_SLAVE_ID,BTC9100_SP1_REG_ADDR,EZD305F_CMB_PORTNAME,EZD305F_CMB_PARITY,EZD305F_CMB_STOPBITS,EZD305F_CMB_DATABITS,EZD305F_CMB_BAUDRATE, FAN_EZD305F_SLAVE_ID, BULB_EZD305F_SLAVE_ID);
         return;
 
     } else {
@@ -468,19 +507,30 @@ void dealCommand(char *buf, char *returnBuf)
 }
 
 void sighandler(int signum){
-    printf("Good bye~~\n");
+    printf("Interrupt exit, good bye~~\n");
+    usleep(100000);
     closeModbus();
+    usleep(100000);
     closeSerial();
-    pthread_exit(&th1);
+    usleep(100000);    
+    //pthread_exit(&th1);
     exit(0);
 }
 
 int main(int argc, char *argv[])
 {
     // char args[2][50] = {"FanOn", "48.7"};  // For test
+    
+    // Initial setting
+    fanSpeed = 80;
+    bulbLight = 50;
+    targetTemp = -1;
+    envTemp = -1;
 
+    // Interrupt condition
     signal(SIGINT, sighandler);
- 
+
+    // Control thread
     pthread_create(&th1, NULL, tempControl, "Child");
     usleep(10000); /* suspend excution for 0.01 seconds */
     openSocket();
@@ -536,5 +586,6 @@ int main(int argc, char *argv[])
         };
     }
     */
+
     return 0;
 }

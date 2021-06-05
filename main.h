@@ -36,7 +36,7 @@
 #define EZD305F_CMB_BAUDRATE 	B9600 /* B + baudrate */
 
 /* SlaveID with different EZD305F device */
-#define FAN_EZD305F_SLAVE_ID  0x0A
+#define FAN_EZD305F_SLAVE_ID  0x01
 #define BULB_EZD305F_SLAVE_ID 0x00
 
 /* Command Define */
@@ -52,18 +52,14 @@
 /* Web socket reference */
 #define LISTEN_PORT 	1500
 #define MAX_LISTEN 		5
-#define MAX_DATA_LENS 	100
+#define MAX_DATA_LENS 	500
 
-/* Static number */
-#define TEMP_RANGE 	0.5
-
-/* Communication Protocol */
-/*
-#define NOTHING		0x00
-#define READ_DATA 	0x01
-#define WRITE_DATA 	0x10
-#define RETURN_DATA 0x11 
-*/
+/* Fuzzy logic renge */
+#define VERY_HOT_THR	0.6
+#define HOT_THR			0.4
+#define NORMAL_RANGE 	0.2
+#define COLD_THR 		-0.4
+#define VERY_COLD_THR 	-0.6
 
 /* Function */
 static int cmdConvertToNum(char *);
@@ -81,3 +77,4 @@ static int closeModbus();
 static void openSocket();
 static void listenFromSocket();
 static unsigned char* percentToHex(int);
+static void sighandler(int signum);
