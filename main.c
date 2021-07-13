@@ -1,5 +1,4 @@
 /* Implement core function of MCU interface */
-
 #include "main.h"
 
 /* Global variable */
@@ -8,13 +7,16 @@ int err;
 int sockfd;
 struct termios portSetting;
 modbus_t *modbusport = NULL;
+pthread_t th1, th2;
+/* Chamber parameter */
 float fanSpeed;
 float bulbLight;
-int fanStatus;
-int bulbStatus;
+int fanSwitch;
+int bulbSwitch;
 float envTemp;
 float targetTemp;
-pthread_t th1, th2;
+int mode;
+int mutex;
 
 /* Convert command of string type to corresponding number */
 int cmdConvertToNum(char *str)
@@ -36,6 +38,8 @@ int cmdConvertToNum(char *str)
         return BULB_ON;
     else if (!strcmp(str, "BulbOff"))
         return BULB_OFF;
+    else if (!strcmp(str, "ChangeMode"))
+        return CHANGE_MODE;
 }
 
 /* Convert 0-100% to 0x00-0xff (0xUV) return {0x0U, 0x0V} */
@@ -82,22 +86,19 @@ int openSerial()
     }
 
     /* Set new port setting struct */
-    portSetting.c_cflag |=
-        (CLOCAL | CREAD); /* Ignore modem control lines and enable receiver. */
+    portSetting.c_cflag |= (CLOCAL | CREAD); /* Ignore modem control lines and enable receiver. */
     portSetting.c_cflag &= ~EZD305F_CMB_PARITY;
-    portSetting.c_cflag &= ~CSTOPB; /* Set one stop bits, if wanted set two stop
-                                       bits then &= CSTOPB */
+    portSetting.c_cflag &= ~CSTOPB; /* Set one stop bits, if wanted set two stop bits then &= CSTOPB */
     portSetting.c_cflag &= ~CSIZE;  /* Nonuse with character size mask */
     portSetting.c_cflag |= EZD305F_CMB_DATABITS;
+
     /* Disable canonical mode(always wtih set ECHOE), echo input characters,
      * When any of the characters INTR, QUIT, SUSP, or DSUSP are received,
      * generate the corresponding signal. */
     portSetting.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
 
-    portSetting.c_cc[VMIN] =
-        0; /* Defines minimum number of characters for noncanonical read */
-    portSetting.c_cc[VTIME] =
-        100; /* Defines timeout in deciseconds for noncanonical read */
+    portSetting.c_cc[VMIN] = 0; /* Defines minimum number of characters for noncanonical read */
+    portSetting.c_cc[VTIME] = 100; /* Defines timeout in deciseconds for noncanonical read */
 
     /* Set input baud rate in termios structure */
     if (cfsetispeed(&portSetting, EZD305F_CMB_BAUDRATE) == -1) {
@@ -168,7 +169,7 @@ int openModbus()
     usleep(10000); /* suspend excution for 0.01 seconds */
 
     modbus_set_slave(modbusport, BTC9100_MODBUS_SLAVE_ID);
-    //
+    
     // set timeout
     modbus_set_response_timeout(modbusport, 1, 500000);
 
@@ -189,8 +190,9 @@ int closeModbus()
 }
 
 /* Send device value to controller */
-void devSetup(unsigned char slaveID, int value)
+void devSetup(unsigned char slaveID, float f_value)
 {
+    int value = (int)f_value;
     unsigned char *valueHex; 
     valueHex = percentToHex(value);
     if(valueHex[0]<0x10 && valueHex[1]<0x10){
@@ -216,15 +218,16 @@ void tempRead()
     uint16_t *tab_reg; /* Define register array */
     tab_reg = malloc(sizeof(uint16_t));
 
-    /* Read target environment temperature */
+    /*
+    // Read target environment temperature 
     err = modbus_read_registers(modbusport, BTC9100_SP1_REG_ADDR, 1, tab_reg);
     if (err == -1) {
         fprintf(stderr, "%s\n", modbus_strerror(errno));
         return;
     }
-    targetTemp = 28.1;
-    //targetTemp = (float) (*tab_reg - 19999) / 10;
-    //printf("reg[%d] = %f(%d)\n", BTC9100_SP1_REG_ADDR, targetTemp, *tab_reg);
+    targetTemp = (float) (*tab_reg - 19999) / 10;
+    printf("reg[%d] = %f(%d)\n", BTC9100_SP1_REG_ADDR, targetTemp, *tab_reg);
+    */
 
     /* Read current environment temperature */
     err = modbus_read_registers(modbusport, BTC9100_PV_REG_ADDR, 1, tab_reg);
@@ -298,7 +301,6 @@ void listenFromSocket()
             printf("Receive msg from web server, command: %s\n",&buf);
             dealCommand(buf, returnBuf);
             send(newfd, returnBuf, strlen(returnBuf), 0);
-            printf("%s %d\n", returnBuf, strlen(returnBuf));
         }
     }
     return;
@@ -308,89 +310,122 @@ void listenFromSocket()
 void *tempControl(void *tmp)
 {
     char c;
-    /* Switch status: On = 1, Off = 0, None = -1 */
-    int fanSwitch = 0;
-    int bulbSwitch = 0;
 
     while (1) {
-        if (!openModbus()) {
-            printf(
-                "Fail to set connection between chamber and PC with "
-                "modbus.");
-            return 0;
-        };
-        usleep(100000);
-        tempRead();
-        usleep(100000);
-        closeModbus();
+        if(mode == 1){
+            while(mutex)
+                usleep(1);
+            mutex = 1;
 
-        /* Chamber is ideal status */
-        if(abs(envTemp - targetTemp) <= NORMAL_RANGE){
-            printf("Chamber is in target environment!\n");
-        }
-        else{
-            /* Chamber is very hot */
-            if (envTemp - targetTemp > VERY_HOT_THR) {
-                fanSpeed += 1;
-                bulbLight = 50.0;
-                fanSwitch = 1;
-                bulbSwitch = 0;
-            }
-            /* Chamber is a little hot */
-            if(envTemp - targetTemp > HOT_THR){
-                fanSpeed += 0.2;
-                bulbLight = 30;
-                fanSwitch = 1;
-                bulbSwitch = 1;
-            }
-            /* Chamber is a little cold*/
-            if(envTemp - targetTemp < COLD_THR){
-                fanSpeed = 50;
-                bulbLight += 0.2;
-                fanSwitch = 1;
-                bulbSwitch = 1;
-            }
-            /* Chamber is very cold*/
-            if(envTemp - targetTemp < VERY_COLD_THR){
-                fanSpeed = 70;
-                bulbLight += 1;
-                fanSwitch = 0;
-                bulbSwitch = 1;
-            }
-
-            if(bulbLight>100)
-                bulbLight = 100;
-            else if(bulbLight < 0)
-                bulbLight = 0;
-
-            if(fanSpeed > 100)
-                fanSpeed = 100;
-            else if(fanSpeed < 50)
-                fanSpeed = 50;
-
-            if (!openSerial()) {
+            if (!openModbus()) {
                 printf(
                     "Fail to set connection between chamber and PC with "
-                    "serial port.");
+                    "modbus.");
                 return 0;
             };
-            usleep(100000);
-            devOnOff(FAN_EZD305F_SLAVE_ID, fanSwitch);
-            usleep(100000);
-            if(fanSwitch)
-                devSetup(FAN_EZD305F_SLAVE_ID, fanSpeed);
-            usleep(100000);
-            devOnOff(BULB_EZD305F_SLAVE_ID, bulbSwitch);
-            usleep(100000);
-            if(bulbSwitch)
-                devSetup(BULB_EZD305F_SLAVE_ID, bulbLight);
-            usleep(100000);
-            closeSerial();
-            usleep(100000);
+            usleep(20000);
+            tempRead();
+            usleep(20000);
+            closeModbus();
+
+            mutex = 0;
+
+            /* Just work on auto mode */
+            if(mode == 1 && targetTemp != -1){
+                /* Chamber is ideal status */
+                if(envTemp - targetTemp <= NORMAL_RANGE && targetTemp - envTemp <= NORMAL_RANGE){
+                    printf("Chamber is in target environment!\n");
+                }
+                else{
+                    /* Chamber is very hot */
+                    if (envTemp - targetTemp > VERY_HOT_THR) {
+                        bulbLight -= 10;
+                        fanSwitch = 1;
+                        fanSpeed = 100;
+                        bulbSwitch = 0;
+                        bulbLight = 0;
+                    }
+                    /* Chamber is a little hot */
+                    else if(envTemp - targetTemp > HOT_THR){
+                        bulbLight -= 5;
+                        fanSwitch = 1;
+                        fanSpeed = 100;
+                        bulbSwitch = 0;
+                        bulbLight = 0;
+                    }
+                    /* Chamber is a little cold*/
+                    else if(targetTemp - envTemp > COLD_THR){
+                        bulbLight += 3;
+                        fanSpeed = 0;
+                        fanSwitch = 0;
+                        bulbSwitch = 1;
+                    }
+                    /* Chamber is very cold*/
+                    else if(targetTemp - envTemp > VERY_COLD_THR){
+                        bulbLight += 5;
+                        fanSpeed = 0;
+                        fanSwitch = 0;
+                        bulbSwitch = 1;
+                    }
+
+                    if(bulbLight>100)
+                        bulbLight = 100;
+                    else if(bulbLight < 0)
+                        bulbLight = 0;
+
+                    while(mutex)
+                        usleep(1);
+                    mutex = 1;
+
+                        if (!openSerial()) {
+                            printf(
+                                "Fail to set connection between chamber and PC with "
+                                "serial port.");
+                            return 0;
+                        };
+                        usleep(20000);
+                        for(int i=0;i<5;i++) 
+                            devOnOff(FAN_EZD305F_SLAVE_ID, fanSwitch);
+                        
+                        usleep(10000);
+                        for(int i=0;i<5;i++)
+                            devSetup(FAN_EZD305F_SLAVE_ID, fanSpeed);
+                        usleep(10000);
+                        closeSerial();
+
+                    mutex = 0;
+                    usleep(10000);
+
+                    while(mutex)
+                        usleep(1);
+                    mutex = 1;
+
+                        if (!openSerial()) {
+                            printf(
+                                "Fail to set connection between chamber and PC with "
+                                "serial port.");
+                            return 0;
+                        };           
+                        usleep(20000);
+                        for(int i=0;i<5;i++)     
+                            devOnOff(BULB_EZD305F_SLAVE_ID, bulbSwitch);
+                        usleep(10000);
+                        for(int i=0;i<5;i++)
+                            devSetup(BULB_EZD305F_SLAVE_ID, bulbLight);
+                        usleep(20000);
+                        closeSerial();
+
+                    mutex = 0;
+                    usleep(10000);
+                } 
+            }
+        
+            printf("mode:%d, Fan switch:%d, Bulb switch:%d\n",mode, fanSwitch, bulbSwitch);
+            printf("Fan Speed:%.2f, Bulb Light:%.2f, Env Temp:%.2f, Target Temp:%2.f\n\n",fanSpeed, bulbLight, envTemp, targetTemp);
         }
-        printf("Now Status\nFan Speed:%.2f, Bulb Light:%.2f, Env Temp:%.2f, Target Temp:%2.f\n\n",fanSpeed, bulbLight, envTemp, targetTemp);
-        usleep(200000); /* suspend excution for 0.3 seconds */
+        usleep(500000); /* suspend excution for 0.5 seconds */
     }
+
     return 0;
 }
 
@@ -398,16 +433,30 @@ void *tempControl(void *tmp)
 void dealCommand(char *buf, char *returnBuf)
 {
     char *p;
-    if(strstr(buf, "DataRead") != NULL){
-        /* Command format: "DataRead"*/
-        snprintf(returnBuf, MAX_DATA_LENS, "envTemp:%f, fanSpeed:%d, bulbLight:%d, targetTemp:%f\n", envTemp, fanSpeed, bulbLight, targetTemp);
+
+    if(strstr(buf, "ChangeMode") != NULL){
+        /* Command format: "ChangeMode"*/
+        if(mode == 1)
+            mode = 2;
+        else if(mode == 2)
+            mode = 1;
+
+        snprintf(returnBuf, MAX_DATA_LENS, "mode:%d\n", mode);
         return;
-    }
-    else if (strstr(buf, "TempSetup") != NULL) {
+    } else if(strstr(buf, "DataRead") != NULL){
+        /* Command format: "DataRead"*/
+        snprintf(returnBuf, MAX_DATA_LENS, "envTemp:%f, fanSpeed:%f, bulbLight:%f, targetTemp:%f\n", envTemp, fanSpeed, bulbLight, targetTemp);
+        return;
+    } else if (strstr(buf, "TempSetup") != NULL) {
         /* Command format: "TempSetup 40.5"*/
         p = strtok(buf, " ");
         p = strtok(NULL, "");
         targetTemp = atof(p);
+
+        while(mutex)
+            usleep(1);
+        mutex = 1;
+
         if (!openModbus()) {
             printf(
                 "Fail to set connection between chamber and PC with modbus.");
@@ -417,103 +466,152 @@ void dealCommand(char *buf, char *returnBuf)
         closeModbus();
         snprintf(returnBuf, MAX_DATA_LENS, "OK, Now targetTemp is %.2f\n",
                  targetTemp);
-        return;
-    } else if (strstr(buf, "FanSetup") != NULL) {
-        /* Command format: "FanSetup 50"*/
-        p = strtok(buf, " ");
-        p = strtok(NULL, "");
-        fanSpeed = atof(p);
-        if (!openSerial()) {
-            printf(
-                "Fail to set connection between chamber and PC with serial "
-                "port.");
-            return;
-        };
-        devSetup(FAN_EZD305F_SLAVE_ID,fanSpeed);
-        closeSerial();
-        snprintf(returnBuf, MAX_DATA_LENS, "OK, Now fan speed is %d\n",
-                 fanSpeed);
-        return;
-    } else if (strstr(buf, "BulbSetup") != NULL){
-        /* Command format: "BulbSetup 50"*/
-        p = strtok(buf, " ");
-        p = strtok(NULL, "");
-        bulbLight = atof(p);
-        if (!openSerial()) {
-            printf(
-                "Fail to set connection between chamber and PC with serial "
-                "port.");
-            return;
-        };
-        devSetup(BULB_EZD305F_SLAVE_ID,bulbLight);
-        closeSerial();
-        snprintf(returnBuf, MAX_DATA_LENS, "OK, Now bulb light is %d\n",
-                 bulbLight);
-        return;
-    } else if (strstr(buf, "FanOn") != NULL) {
-        /* Command format: "FanOn" */
-        if (!openSerial()) {
-            printf(
-                "Fail to set connection between chamber and PC with serial "
-                "port.");
-            return;
-        };
-        devOnOff(FAN_EZD305F_SLAVE_ID, 1);
-        closeSerial();
-        snprintf(returnBuf, MAX_DATA_LENS, "OK, Fan On\n");
+
+        mutex = 0;
 
         return;
-    } else if (strstr(buf, "FanOff") != NULL) {
-        /* Command format: "FanOff" */
-        if (!openSerial()) {
-            printf(
-                "Fail to set connection between chamber and PC with serial "
-                "port.");
+    } else if (strstr(buf, "ConfigFileRead") != NULL) {
+            /* Command format: "ConfigFileRead" */
+            snprintf(returnBuf, MAX_DATA_LENS, "BTC9100_CMB_PORTNAME:%s, BTC9100_MODBUS_PARITY:%s, BTC9100_CMB_STOPBITS:%s, BTC9100_CMB_DATABITS:%s,\
+                BTC9100_MODBUS_BAUDRATE:%s, BTC9100_MODBUS_SLAVE_ID:%s, BTC9100_SP1_REG_ADDR:%s, BTC9100_PV_REG_ADDR:%s, EZD305F_CMB_PORTNAME:%s,\
+                EZD305F_CMB_PARITY:%s, EZD305F_CMB_STOPBITS:%s, EZD305F_CMB_DATABITS:%s, EZD305F_CMB_BAUDRATE:%s, FAN_EZD305F_SLAVE_ID:%s, BULB_EZD305F_SLAVE_ID:%s\n",\
+                BTC9100_CMB_PORTNAME, BTC9100_MODBUS_PARITY, BTC9100_CMB_STOPBITS, BTC9100_CMB_DATABITS, BTC9100_MODBUS_BAUDRATE, BTC9100_MODBUS_SLAVE_ID,\
+                BTC9100_SP1_REG_ADDR, BTC9100_PV_REG_ADDR, EZD305F_CMB_PORTNAME, EZD305F_CMB_PARITY, EZD305F_CMB_STOPBITS, EZD305F_CMB_DATABITS, EZD305F_CMB_BAUDRATE,\
+                FAN_EZD305F_SLAVE_ID, BULB_EZD305F_SLAVE_ID);
             return;
-        };
-        devOnOff(FAN_EZD305F_SLAVE_ID, 0);
-        closeSerial();
-        snprintf(returnBuf, MAX_DATA_LENS, "OK, Fan Off\n");
-    } else if (strstr(buf, "BulbOn") != NULL) {
-        /* Command format: "BulbOn" */
-        if (!openSerial()) {
-            printf(
-                "Fail to set connection between chamber and PC with serial "
-                "port.");
-            return;
-        };
-        devOnOff(BULB_EZD305F_SLAVE_ID, 1);
-        closeSerial();
-        snprintf(returnBuf, MAX_DATA_LENS, "OK, Bulb On\n");                
-    } else if (strstr(buf, "BulbOff") != NULL) {
-        /* Command format: "BulbOn" */
-        if (!openSerial()) {
-            printf(
-                "Fail to set connection between chamber and PC with serial "
-                "port.");
-            return;
-        };
-        devOnOff(BULB_EZD305F_SLAVE_ID, 0);
-        closeSerial();
-        snprintf(returnBuf, MAX_DATA_LENS, "OK, Bulb Off\n");                 
-    } else if(strstr(buf, "ConfigFileRead") != NULL) {
-        /* Command format: "ConfigFileRead" */
-        snprintf(returnBuf, MAX_DATA_LENS, "BTC9100_CMB_PORTNAME:%s, BTC9100_MODBUS_PARITY:%s, BTC9100_CMB_STOPBITS:%s, BTC9100_CMB_DATABITS:%s, BTC9100_MODBUS_BAUDRATE:%s, BTC9100_MODBUS_SLAVE_ID:%s, BTC9100_SP1_REG_ADDR:%s, BTC9100_PV_REG_ADDR:%s, EZD305F_CMB_PORTNAME:%s, EZD305F_CMB_PARITY:%s, EZD305F_CMB_STOPBITS:%s, EZD305F_CMB_DATABITS:%s, EZD305F_CMB_BAUDRATE:%s, FAN_EZD305F_SLAVE_ID:%s, BULB_EZD305F_SLAVE_ID:%s\n", BTC9100_CMB_PORTNAME, BTC9100_MODBUS_PARITY, BTC9100_CMB_STOPBITS,BTC9100_CMB_DATABITS, BTC9100_MODBUS_BAUDRATE, BTC9100_MODBUS_SLAVE_ID,BTC9100_SP1_REG_ADDR,EZD305F_CMB_PORTNAME,EZD305F_CMB_PARITY,EZD305F_CMB_STOPBITS,EZD305F_CMB_DATABITS,EZD305F_CMB_BAUDRATE, FAN_EZD305F_SLAVE_ID, BULB_EZD305F_SLAVE_ID);
-        return;
+    } 
 
-    } else {
-        printf("***Error command or command convert failured.***\n");
+    /* just use on manual mode */
+    if(mode == 2){
+        char *p;
+        if (strstr(buf, "FanSetup") != NULL) {
+            /* Command format: "FanSetup 50"*/
+            p = strtok(buf, " ");
+            p = strtok(NULL, "");
+            fanSpeed = atof(p);
+            while(mutex){}
+            mutex = 1;
+            if (!openSerial()) {
+                printf(
+                    "Fail to set connection between chamber and PC with serial "
+                    "port.");
+                return;
+            };
+            usleep(10000);
+            devSetup(FAN_EZD305F_SLAVE_ID,fanSpeed);
+            usleep(10000);
+            closeSerial();
+            mutex = 0;
+            snprintf(returnBuf, MAX_DATA_LENS, "OK, Now fan speed is %d\n",
+                     fanSpeed);
+            return;
+        } else if (strstr(buf, "BulbSetup") != NULL){
+            /* Command format: "BulbSetup 50"*/
+            p = strtok(buf, " ");
+            p = strtok(NULL, "");
+            bulbLight = atof(p);
+            while(mutex){}
+            mutex = 1;
+            if (!openSerial()) {
+                printf(
+                    "Fail to set connection between chamber and PC with serial "
+                    "port.");
+                return;
+            };
+            usleep(10000);
+            devSetup(BULB_EZD305F_SLAVE_ID,bulbLight);
+            usleep(10000);
+            closeSerial();
+            mutex = 0;
+            snprintf(returnBuf, MAX_DATA_LENS, "OK, Now bulb light is %d\n",
+                     bulbLight);
+            return;
+        } else if (strstr(buf, "FanOn") != NULL) {
+            /* Command format: "FanOn" */
+            while(mutex){}
+            mutex = 1;
+            if (!openSerial()) {
+                printf(
+                    "Fail to set connection between chamber and PC with serial "
+                    "port.");
+                return;
+            };
+            usleep(10000);
+            devOnOff(FAN_EZD305F_SLAVE_ID, 1);
+            usleep(10000);
+            closeSerial();
+            mutex = 0;
+            snprintf(returnBuf, MAX_DATA_LENS, "OK, Fan On\n");
+
+            return;
+        } else if (strstr(buf, "FanOff") != NULL) {
+            /* Command format: "FanOff" */
+            while(mutex){}
+            mutex = 1;
+            if (!openSerial()) {
+                printf(
+                    "Fail to set connection between chamber and PC with serial "
+                    "port.");
+                return;
+            };
+            usleep(10000);
+            devOnOff(FAN_EZD305F_SLAVE_ID, 0);
+            usleep(10000);
+            closeSerial();
+            mutex = 0;
+            snprintf(returnBuf, MAX_DATA_LENS, "OK, Fan Off\n");
+
+            return;
+        } else if (strstr(buf, "BulbOn") != NULL) {
+            /* Command format: "BulbOn" */
+            while(mutex){}
+            mutex = 1;
+            if (!openSerial()) {
+                printf(
+                    "Fail to set connection between chamber and PC with serial "
+                    "port.");
+                return;
+            };
+            usleep(10000);
+            devOnOff(BULB_EZD305F_SLAVE_ID, 1);
+            usleep(10000);
+            closeSerial();
+            mutex = 0;
+            snprintf(returnBuf, MAX_DATA_LENS, "OK, Bulb On\n");
+
+            return;                
+        } else if (strstr(buf, "BulbOff") != NULL) {
+            /* Command format: "BulbOn" */
+            while(mutex){}
+            mutex = 1;
+            if (!openSerial()) {
+                printf(
+                    "Fail to set connection between chamber and PC with serial "
+                    "port.");
+                return;
+            };
+            usleep(10000);
+            devOnOff(BULB_EZD305F_SLAVE_ID, 0);
+            usleep(10000);
+            closeSerial();
+            mutex = 0;
+            snprintf(returnBuf, MAX_DATA_LENS, "OK, Bulb Off\n");
+
+            return;                 
+        } else {
+            printf("***Error command or command convert failured.***\n");
+        }
     }
 }
 
 void sighandler(int signum){
     printf("Interrupt exit, good bye~~\n");
+    pthread_exit(&th1);
     usleep(100000);
     closeModbus();
     usleep(100000);
     closeSerial();
     usleep(100000);    
-    //pthread_exit(&th1);
     exit(0);
 }
 
@@ -522,10 +620,14 @@ int main(int argc, char *argv[])
     // char args[2][50] = {"FanOn", "48.7"};  // For test
     
     // Initial setting
-    fanSpeed = 80;
-    bulbLight = 50;
+    fanSpeed = 0;
+    bulbLight = 0;
     targetTemp = -1;
     envTemp = -1;
+    mode = 1;
+    fanSwitch = 0;
+    bulbSwitch = 0;
+    mutex = 0;
 
     // Interrupt condition
     signal(SIGINT, sighandler);
@@ -586,6 +688,5 @@ int main(int argc, char *argv[])
         };
     }
     */
-
     return 0;
 }

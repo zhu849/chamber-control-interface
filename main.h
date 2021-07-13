@@ -48,6 +48,7 @@
 #define BULB_SETUP 	5
 #define BULB_ON 	6
 #define BULB_OFF 	7
+#define CHANGE_MODE 8
 
 /* Web socket reference */
 #define LISTEN_PORT 	1500
@@ -58,15 +59,15 @@
 #define VERY_HOT_THR	0.6
 #define HOT_THR			0.4
 #define NORMAL_RANGE 	0.2
-#define COLD_THR 		-0.4
-#define VERY_COLD_THR 	-0.6
+#define COLD_THR 		0.4
+#define VERY_COLD_THR 	0.6
 
 /* Function */
 static int cmdConvertToNum(char *);
 static unsigned char* percentToHex(int);
 static void tempRead();
 static void tempSetup(float);
-static void devSetup(unsigned char, int);
+static void devSetup(unsigned char, float);
 static void devOnOff(unsigned char, unsigned char);
 static void *tempControl(void *tmp);
 static void dealCommand(char *, char *);
