@@ -30,7 +30,7 @@
 
 /* Controller connection information */
 #define EZD305F_CMB_PORTNAME 	"/dev/ttyUSB0"
-#define EZD305F_CMB_PARITY 		0   /* 0 = None, PARENB = Even, PARODD = Odd */
+#define EZD305F_CMB_PARITY 		0 /* 0 = None, PARENB = Even, PARODD = Odd */
 #define EZD305F_CMB_STOPBITS 	1 /* CSTOPB = 2 bits, otherwise = 1bits */
 #define EZD305F_CMB_DATABITS 	CS8
 #define EZD305F_CMB_BAUDRATE 	B9600 /* B + baudrate */
@@ -61,6 +61,11 @@
 #define NORMAL_RANGE 	0.2
 #define COLD_THR 		0.4
 #define VERY_COLD_THR 	0.6
+
+/* MCU Control Mode */
+#define AUTO	1
+#define MANUAL 	2
+#define DEBUG	3
 
 /* Function */
 static int cmdConvertToNum(char *);
